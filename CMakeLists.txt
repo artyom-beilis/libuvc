@@ -39,17 +39,23 @@ set(SOURCES
   src/misc.c
 )
 
-find_package(LibUSB)
+#find_package(LibUSB)
+#include_directories(${USB_INC} ${USB_INC}/libusb-1.0)
+find_path(USB_INC libusb.h REQUIRED)
+include_directories(${USB_INC})
+
+find_library(USB_LIB usb-1.0 REQUIRED)
 
 # JpegPkg name to differ from shipped with CMake
-find_package(JpegPkg QUIET)
-if(JPEG_FOUND)
-  message(STATUS "Building libuvc with JPEG support.")
-  set(LIBUVC_HAS_JPEG TRUE)
-  list(APPEND SOURCES src/frame-mjpeg.c)
-else()
-  message(WARNING "JPEG not found. libuvc will not support JPEG decoding.")
-endif()
+#find_package(JpegPkg QUIET)
+#if(JPEG_FOUND)
+#  message(STATUS "Building libuvc with JPEG support.")
+set(LIBUVC_HAS_JPEG TRUE)
+list(APPEND SOURCES src/frame-mjpeg.c)
+include_directories(${JPG_INC})
+#else()
+#  message(WARNING "JPEG not found. libuvc will not support JPEG decoding.")
+#endif()
 
 if(UNIX AND NOT APPLE)
   set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
@@ -116,13 +122,13 @@ foreach(target_name IN LISTS UVC_TARGETS)
   )
   target_link_libraries(${target_name}
     # libusb-1.0 used internally so we link to it privately.
-    PRIVATE LibUSB::LibUSB ${threads}
+    #PRIVATE LibUSB::LibUSB ${threads}
+    PRIVATE ${USB_LIB} ${threads}
   )
-  if(JPEG_FOUND)
     target_link_libraries(${target_name}
-      PRIVATE JPEG::JPEG
+      PRIVATE ${JPG_LIB}
     )
-  endif()
+  #endif()
   set_target_properties(${target_name} PROPERTIES
       PUBLIC_HEADER "include/libuvc/libuvc.h;${CMAKE_CURRENT_BINARY_DIR}/include/libuvc/libuvc_config.h"
   )
@@ -131,15 +137,17 @@ foreach(target_name IN LISTS UVC_TARGETS)
       PRIVATE
         UVC_DEBUGGING
     )
-    find_library(
-            log-lib
-            log
-    )
-    target_link_libraries(
-            ${target_name}
-            PRIVATE
-            ${log-lib}
-    )
+    if(ANDROID_ABI)
+        find_library(
+                log-lib
+                log
+        )
+        target_link_libraries(
+                ${target_name}
+                PRIVATE
+                ${log-lib}
+        )
+    endif()
   endif()
 endforeach()
 
@@ -149,6 +157,8 @@ if(BUILD_EXAMPLE)
   target_link_libraries(example
     PRIVATE
       LibUVC::UVC
+      ${USB_LIB}
+      #LibUSB::LibUSB
       Threads::Threads
   )
 endif()
@@ -207,11 +217,6 @@ install(FILES
   DESTINATION ${CMAKE_INSTALL_CMAKEDIR}
 )
 
-if(JPEG_FOUND)
-  # If we have used JPEG library we need to 
-  # add linker flag for it in config file for pkgconfig
-  set(PKGCONFIG_JPEG_LDFLAG "-ljpeg")
-endif()
 
 configure_file(libuvc.pc.in
   ${PROJECT_BINARY_DIR}/libuvc.pc
