@@ -842,7 +842,7 @@ void LIBUSB_CALL _uvc_stream_callback(struct libusb_transfer *transfer) {
     pthread_mutex_lock(&strmh->cb_mutex);
 
     /* Mark transfer as deleted. */
-    for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS; i++) {
+    for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS_LIMIT; i++) {
       if(strmh->transfers[i] == transfer) {
         UVC_DEBUG("Freeing transfer %d (%p)", i, transfer);
         free(transfer->buffer);
@@ -851,7 +851,7 @@ void LIBUSB_CALL _uvc_stream_callback(struct libusb_transfer *transfer) {
         break;
       }
     }
-    if(i == LIBUVC_NUM_TRANSFER_BUFS ) {
+    if(i == LIBUVC_NUM_TRANSFER_BUFS_LIMIT ) {
       UVC_DEBUG("transfer %p not found; not freeing!", transfer);
     }
 
@@ -878,7 +878,7 @@ void LIBUSB_CALL _uvc_stream_callback(struct libusb_transfer *transfer) {
         pthread_mutex_lock(&strmh->cb_mutex);
 
         /* Mark transfer as deleted. */
-        for (i = 0; i < LIBUVC_NUM_TRANSFER_BUFS; i++) {
+        for (i = 0; i < LIBUVC_NUM_TRANSFER_BUFS_LIMIT; i++) {
           if (strmh->transfers[i] == transfer) {
             UVC_DEBUG("Freeing failed transfer %d (%p)", i, transfer);
             free(transfer->buffer);
@@ -899,7 +899,7 @@ void LIBUSB_CALL _uvc_stream_callback(struct libusb_transfer *transfer) {
       pthread_mutex_lock(&strmh->cb_mutex);
 
       /* Mark transfer as deleted. */
-      for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS; i++) {
+      for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS_LIMIT; i++) {
         if(strmh->transfers[i] == transfer) {
           UVC_DEBUG("Freeing orphan transfer %d (%p)", i, transfer);
           free(transfer->buffer);
@@ -908,7 +908,7 @@ void LIBUSB_CALL _uvc_stream_callback(struct libusb_transfer *transfer) {
           break;
         }
       }
-      if(i == LIBUVC_NUM_TRANSFER_BUFS ) {
+      if(i == LIBUVC_NUM_TRANSFER_BUFS_LIMIT ) {
         UVC_DEBUG("orphan transfer %p not found; not freeing!", transfer);
       }
 
@@ -1038,6 +1038,9 @@ uvc_error_t uvc_stream_open_ctrl(uvc_device_handle_t *devh, uvc_stream_handle_t 
   if (ret != UVC_SUCCESS)
     goto fail;
 
+  strmh->num_transfer_bufs = LIBUVC_NUM_TRANSFER_BUFS;
+  strmh->transfer_buf_size = 0;
+
   // Set up the streaming status and data space
   strmh->running = 0;
 
@@ -1064,6 +1067,34 @@ fail:
   return ret;
 }
 
+/** Adjust stream buffer sizes
+ *
+ * @param strmh UVC stream
+ * @param buffers - number of transfer buffers, -1 - don't modify, 0 - use default, N set number of buffers
+ * @param buffer_size - -1 - don't nodif, 0 - use default, M - select specific size
+ */
+
+void uvc_stream_set_transfer_buffer_sizes(uvc_stream_handle_t *strmh,int buffers,int buffer_size)
+{
+    if(buffers >= 0) {
+        if(buffers == 0) {
+            strmh->num_transfer_bufs = LIBUVC_NUM_TRANSFER_BUFS;
+        }
+        else if(buffers <= LIBUVC_NUM_TRANSFER_BUFS_LIMIT) {
+            strmh->num_transfer_bufs = buffers;
+        }
+        else {
+            strmh->num_transfer_bufs = LIBUVC_NUM_TRANSFER_BUFS_LIMIT;
+        }
+    }
+    if(buffer_size >= 0) {
+        strmh->transfer_buf_size = buffer_size;
+    }
+    UVC_DEBUG("New buffer count/size = %d/%d",strmh->num_transfer_bufs,strmh->transfer_buf_size);
+}
+
+
+
 /** Begin streaming video from the stream into the callback function.
  * @ingroup streaming
  *
@@ -1072,6 +1103,8 @@ fail:
  * @param flags Stream setup flags, currently undefined. Set this to zero. The lower bit
  * is reserved for backward compatibility.
  */
+
+
 uvc_error_t uvc_stream_start(
     uvc_stream_handle_t *strmh,
     uvc_frame_callback_t *cb,
@@ -1175,6 +1208,8 @@ uvc_error_t uvc_stream_start(
         }
       }
 
+      UVC_DEBUG("Bytes per packet = %ld config bpp=%ld max_Frame_size=%d",endpoint_bytes_per_packet,config_bytes_per_packet,ctrl->dwMaxVideoFrameSize);
+
       if (endpoint_bytes_per_packet >= config_bytes_per_packet) {
         /* Transfers will be at most one frame long: Divide the maximum frame size
          * by the size of the endpoint and round up */
@@ -1182,6 +1217,7 @@ uvc_error_t uvc_stream_start(
                                 endpoint_bytes_per_packet - 1) / endpoint_bytes_per_packet;
 
         /* But keep a reasonable limit: Otherwise we start dropping data */
+        UVC_DEBUG("Limiting ppt=%ld",packets_per_transfer);
         if (packets_per_transfer > 32)
           packets_per_transfer = 32;
         
@@ -1206,7 +1242,12 @@ uvc_error_t uvc_stream_start(
     }
 
     /* Set up the transfers */
-    for (transfer_id = 0; transfer_id < LIBUVC_NUM_TRANSFER_BUFS; ++transfer_id) {
+    for (transfer_id = 0; transfer_id < strmh->num_transfer_bufs; ++transfer_id) {
+      if(strmh->transfer_buf_size != 0) {
+          total_transfer_size = strmh->transfer_buf_size;
+          packets_per_transfer = 1;
+          UVC_DEBUG("Overriding transfer size to %ld",total_transfer_size);
+      }
       transfer = libusb_alloc_transfer(packets_per_transfer);
       strmh->transfers[transfer_id] = transfer;      
       strmh->transfer_bufs[transfer_id] = malloc(total_transfer_size);
@@ -1219,16 +1260,20 @@ uvc_error_t uvc_stream_start(
       libusb_set_iso_packet_lengths(transfer, endpoint_bytes_per_packet);
     }
   } else {
-    for (transfer_id = 0; transfer_id < LIBUVC_NUM_TRANSFER_BUFS;
+    for (transfer_id = 0; transfer_id < strmh->num_transfer_bufs;
         ++transfer_id) {
       transfer = libusb_alloc_transfer(0);
       strmh->transfers[transfer_id] = transfer;
+      size_t buf_size = strmh->cur_ctrl.dwMaxPayloadTransferSize;
+      if(strmh->transfer_buf_size != 0 && strmh->transfer_buf_size <= strmh->cur_ctrl.dwMaxPayloadTransferSize)
+          buf_size = strmh->cur_ctrl.dwMaxPayloadTransferSize;
+      UVC_DEBUG("Submitting transfer %d: of %ld",transfer_id,buf_size);
       strmh->transfer_bufs[transfer_id] = malloc (
-          strmh->cur_ctrl.dwMaxPayloadTransferSize );
+          buf_size );
       libusb_fill_bulk_transfer ( transfer, strmh->devh->usb_devh,
           format_desc->parent->bEndpointAddress,
           strmh->transfer_bufs[transfer_id],
-          strmh->cur_ctrl.dwMaxPayloadTransferSize, _uvc_stream_callback,
+          buf_size, _uvc_stream_callback,
           ( void* ) strmh, 5000 );
     }
   }
@@ -1243,7 +1288,7 @@ uvc_error_t uvc_stream_start(
     pthread_create(&strmh->cb_thread, NULL, _uvc_user_caller, (void*) strmh);
   }
 
-  for (transfer_id = 0; transfer_id < LIBUVC_NUM_TRANSFER_BUFS;
+  for (transfer_id = 0; transfer_id < strmh->num_transfer_bufs;
       transfer_id++) {
     ret = libusb_submit_transfer(strmh->transfers[transfer_id]);
     if (ret != UVC_SUCCESS) {
@@ -1253,7 +1298,7 @@ uvc_error_t uvc_stream_start(
   }
 
   if ( ret != UVC_SUCCESS && transfer_id >= 0 ) {
-    for ( ; transfer_id < LIBUVC_NUM_TRANSFER_BUFS; transfer_id++) {
+    for ( ; transfer_id < strmh->num_transfer_bufs; transfer_id++) {
       free ( strmh->transfers[transfer_id]->buffer );
       libusb_free_transfer ( strmh->transfers[transfer_id]);
       strmh->transfers[transfer_id] = 0;
@@ -1502,18 +1547,18 @@ uvc_error_t uvc_stream_stop(uvc_stream_handle_t *strmh) {
   /* Attempt to cancel any running transfers, we can't free them just yet because they aren't
    *   necessarily completed but they will be free'd in _uvc_stream_callback().
    */
-  for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS; i++) {
+  for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS_LIMIT; i++) {
     if(strmh->transfers[i] != NULL)
       libusb_cancel_transfer(strmh->transfers[i]);
   }
 
   /* Wait for transfers to complete/cancel */
   do {
-    for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS; i++) {
+    for(i=0; i < LIBUVC_NUM_TRANSFER_BUFS_LIMIT; i++) {
       if(strmh->transfers[i] != NULL)
         break;
     }
-    if(i == LIBUVC_NUM_TRANSFER_BUFS )
+    if(i == LIBUVC_NUM_TRANSFER_BUFS_LIMIT )
       break;
     pthread_cond_wait(&strmh->cb_cond, &strmh->cb_mutex);
   } while(1);

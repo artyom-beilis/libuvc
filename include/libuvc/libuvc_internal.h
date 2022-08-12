@@ -229,6 +229,7 @@ typedef struct uvc_device_info {
 #else
 #define LIBUVC_NUM_TRANSFER_BUFS 100
 #endif
+#define LIBUVC_NUM_TRANSFER_BUFS_LIMIT 1000
 #endif
 
 #define LIBUVC_XFER_META_BUF_SIZE ( 4 * 1024 )
@@ -257,8 +258,10 @@ struct uvc_stream_handle {
   uint32_t last_polled_seq;
   uvc_frame_callback_t *user_cb;
   void *user_ptr;
-  struct libusb_transfer *transfers[LIBUVC_NUM_TRANSFER_BUFS];
-  uint8_t *transfer_bufs[LIBUVC_NUM_TRANSFER_BUFS];
+  int num_transfer_bufs;
+  uint32_t transfer_buf_size;
+  struct libusb_transfer *transfers[LIBUVC_NUM_TRANSFER_BUFS_LIMIT];
+  uint8_t *transfer_bufs[LIBUVC_NUM_TRANSFER_BUFS_LIMIT];
   struct uvc_frame frame;
   enum uvc_frame_format frame_format;
   struct timespec capture_time_finished;
